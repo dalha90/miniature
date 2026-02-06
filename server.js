@@ -1,5 +1,5 @@
 // server.js
-// Earthy AI – Express backend with OpenAI chat + lead capture
+// Earthy AI – Express backend with OpenAI chat + lead capture (Resend)
 
 const express = require('express');
 const cors = require('cors');
@@ -22,10 +22,10 @@ app.get('/', (req, res) => {
 ---------------------------- */
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-nano';
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
 
-if (!OPENAI_API_KEY) {
-  console.warn('OPENAI_API_KEY is not set');
-}
+if (!OPENAI_API_KEY) console.warn('OPENAI_API_KEY is not set');
+if (!RESEND_API_KEY) console.warn('RESEND_API_KEY is not set');
 
 /* ---------------------------
    Helper: build messages
@@ -102,11 +102,12 @@ Keep replies 2–4 sentences. No hype. No emojis.`
 });
 
 /* ---------------------------
-   Lead / enquiry endpoint
+   Lead / enquiry endpoint (Resend)
 ---------------------------- */
-app.post('/lead', (req, res) => {
+app.post('/lead', async (req, res) => {
   try {
     const {
+      honeypot,
       businessName,
       website,
       email,
@@ -114,17 +115,46 @@ app.post('/lead', (req, res) => {
       message
     } = req.body || {};
 
+    // Honeypot spam trap
+    if (honeypot) {
+      return res.json({ success: true });
+    }
+
     if (!businessName || !email) {
       return res.status(400).json({ success: false });
     }
 
-    console.log('--- New Earthy Enquiry ---');
-    console.log('Business:', businessName);
-    console.log('Website:', website);
-    console.log('Email:', email);
-    console.log('Phone:', phone);
-    console.log('Message:', message);
-    console.log('-------------------------');
+    const emailBody = `
+New Earthy enquiry
+
+Business: ${businessName}
+Website: ${website || '—'}
+Email: ${email}
+Phone: ${phone || '—'}
+
+Message:
+${message || '—'}
+    `;
+
+    const resendResp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'Earthy AI <onboarding@resend.dev>',
+        to: ['dalhaaide@gmail.com'],
+        subject: `New Earthy enquiry – ${businessName}`,
+        text: emailBody
+      })
+    });
+
+    if (!resendResp.ok) {
+      const err = await resendResp.text();
+      console.error('Resend error:', err);
+      return res.status(500).json({ success: false });
+    }
 
     res.json({ success: true });
   } catch (err) {
