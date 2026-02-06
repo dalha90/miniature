@@ -21,8 +21,10 @@ app.get('/', (req, res) => {
    Environment variables
 ---------------------------- */
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-nano';
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+
+// FORCE a stable model (do NOT rely on env here)
+const OPENAI_MODEL = 'gpt-4o-mini';
 
 if (!OPENAI_API_KEY) console.warn('OPENAI_API_KEY is not set');
 if (!RESEND_API_KEY) console.warn('RESEND_API_KEY is not set');
@@ -46,8 +48,12 @@ function buildMessagesFromHistory(history = []) {
 app.post('/chat', async (req, res) => {
   try {
     const { input, history = [] } = req.body || {};
+
     if (!input || !input.trim()) {
-      return res.status(400).json({ reply: 'Invalid request', history });
+      return res.status(400).json({
+        reply: 'Please enter a message.',
+        history
+      });
     }
 
     const messages = buildMessagesFromHistory(history);
@@ -84,16 +90,28 @@ Keep replies 2–4 sentences. No hype. No emojis.`
     });
 
     const data = await openaiResp.json();
+
+    // HARDENED extraction — no silent fallback
     const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      'Could you clarify that?';
+      data?.choices?.[0]?.message?.content &&
+      typeof data.choices[0].message.content === 'string'
+        ? data.choices[0].message.content.trim()
+        : null;
+
+    if (!reply) {
+      console.error('OpenAI returned no usable reply:', JSON.stringify(data, null, 2));
+      return res.status(500).json({
+        reply: 'Sorry — something went wrong. Please try again.',
+        history
+      });
+    }
 
     res.json({
       reply,
       history: [...history, { author: 'ai', text: reply }]
     });
   } catch (err) {
-    console.error(err);
+    console.error('Chat error:', err);
     res.status(500).json({
       reply: 'Server error',
       history: req.body?.history || []
@@ -115,32 +133,16 @@ app.post('/lead', async (req, res) => {
       message
     } = req.body || {};
 
-    // If honeypot is filled, silently treat as success to deter bots
+    // Honeypot spam trap
     if (honeypot) {
       return res.json({ success: true });
     }
 
-    // Basic validation for required fields
-    if (!businessName || !businessName.toString().trim()) {
-      return res.status(400).json({ success: false });
-    }
-    if (!email || !email.toString().trim()) {
+    if (!businessName || !email) {
       return res.status(400).json({ success: false });
     }
 
-    // Basic email format validation
-    const emailStr = String(email).trim();
-    const simpleEmailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!simpleEmailRegex.test(emailStr)) {
-      return res.status(400).json({ success: false });
-    }
-
-    const biz = String(businessName).trim();
-    let site = website && String(website).trim() ? String(website).trim() : '';
-    const phoneStr = phone && String(phone).trim() ? String(phone).trim() : '';
-    const messageStr = message && String(message).trim() ? String(message).trim() : '';
-
-    // Normalize website: add protocol if missing
+    let site = website ? String(website).trim() : '';
     if (site && !/^https?:\/\//i.test(site)) {
       site = 'https://' + site;
     }
@@ -148,20 +150,14 @@ app.post('/lead', async (req, res) => {
     const emailBody = `
 New Earthy enquiry
 
-Business: ${biz}
+Business: ${businessName}
 Website: ${site || '—'}
-Email: ${emailStr}
-Phone: ${phoneStr || '—'}
+Email: ${email}
+Phone: ${phone || '—'}
 
 Message:
-${messageStr || '—'}
+${message || '—'}
     `;
-
-    // Ensure RESEND_API_KEY exists
-    if (!RESEND_API_KEY) {
-      console.error('RESEND_API_KEY not configured; cannot send lead email.');
-      return res.status(500).json({ success: false });
-    }
 
     const resendResp = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -172,18 +168,17 @@ ${messageStr || '—'}
       body: JSON.stringify({
         from: 'Earthy AI <onboarding@resend.dev>',
         to: ['dalhaaide@gmail.com'],
-        subject: `New Earthy enquiry – ${biz}`,
+        subject: `New Earthy enquiry – ${businessName}`,
         text: emailBody
       })
     });
 
     if (!resendResp.ok) {
-      const errText = await resendResp.text().catch(() => 'No response body');
-      console.error('Resend error:', resendResp.status, resendResp.statusText, errText);
+      const errText = await resendResp.text();
+      console.error('Resend error:', errText);
       return res.status(500).json({ success: false });
     }
 
-    // All good
     res.json({ success: true });
   } catch (err) {
     console.error('Lead error:', err);
