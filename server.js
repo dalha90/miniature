@@ -115,26 +115,53 @@ app.post('/lead', async (req, res) => {
       message
     } = req.body || {};
 
-    // Honeypot spam trap
+    // If honeypot is filled, silently treat as success to deter bots
     if (honeypot) {
       return res.json({ success: true });
     }
 
-    if (!businessName || !email) {
+    // Basic validation for required fields
+    if (!businessName || !businessName.toString().trim()) {
       return res.status(400).json({ success: false });
+    }
+    if (!email || !email.toString().trim()) {
+      return res.status(400).json({ success: false });
+    }
+
+    // Basic email format validation
+    const emailStr = String(email).trim();
+    const simpleEmailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!simpleEmailRegex.test(emailStr)) {
+      return res.status(400).json({ success: false });
+    }
+
+    const biz = String(businessName).trim();
+    let site = website && String(website).trim() ? String(website).trim() : '';
+    const phoneStr = phone && String(phone).trim() ? String(phone).trim() : '';
+    const messageStr = message && String(message).trim() ? String(message).trim() : '';
+
+    // Normalize website: add protocol if missing
+    if (site && !/^https?:\/\//i.test(site)) {
+      site = 'https://' + site;
     }
 
     const emailBody = `
 New Earthy enquiry
 
-Business: ${businessName}
-Website: ${website || '—'}
-Email: ${email}
-Phone: ${phone || '—'}
+Business: ${biz}
+Website: ${site || '—'}
+Email: ${emailStr}
+Phone: ${phoneStr || '—'}
 
 Message:
-${message || '—'}
+${messageStr || '—'}
     `;
+
+    // Ensure RESEND_API_KEY exists
+    if (!RESEND_API_KEY) {
+      console.error('RESEND_API_KEY not configured; cannot send lead email.');
+      return res.status(500).json({ success: false });
+    }
 
     const resendResp = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -145,17 +172,18 @@ ${message || '—'}
       body: JSON.stringify({
         from: 'Earthy AI <onboarding@resend.dev>',
         to: ['dalhaaide@gmail.com'],
-        subject: `New Earthy enquiry – ${businessName}`,
+        subject: `New Earthy enquiry – ${biz}`,
         text: emailBody
       })
     });
 
     if (!resendResp.ok) {
-      const err = await resendResp.text();
-      console.error('Resend error:', err);
+      const errText = await resendResp.text().catch(() => 'No response body');
+      console.error('Resend error:', resendResp.status, resendResp.statusText, errText);
       return res.status(500).json({ success: false });
     }
 
+    // All good
     res.json({ success: true });
   } catch (err) {
     console.error('Lead error:', err);
